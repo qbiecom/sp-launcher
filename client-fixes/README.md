@@ -56,3 +56,6 @@ cache value. It logs custom-archive misses and successful/deleted entries from
 other archives, up to 64 messages. It does not alter lookup results. The extra
 lookup hook is omitted when the debug console setting is off.
 
+The debug diagnostic also reports the custom and source archives' actual list
+positions and stored priorities for up to eight CheatTable lookups. Absence
+of the custom archive from that particular list is reported explicitly.

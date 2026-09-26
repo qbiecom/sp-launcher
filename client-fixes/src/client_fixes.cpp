@@ -929,7 +929,7 @@ DWORD WINAPI Run(LPVOID) {
 
 // Exported version marker for identifying which DLL was embedded. This number
 // advances when a fix is added; the launcher does not currently branch on it.
-extern "C" __declspec(dllexport) unsigned int SPClientFixesVersion() { return 8; }
+extern "C" __declspec(dllexport) unsigned int SPClientFixesVersion() { return 9; }
 
 // DllMain runs under the Windows loader lock. Only disable thread callbacks
 // and start the bootstrap worker here; do not hash files, scan UObjects, wait

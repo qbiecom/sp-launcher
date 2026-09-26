@@ -22,6 +22,9 @@ using Validate = bool (*)(void*, void*, const Array*);
 Validate original = nullptr;
 using Find = unsigned char (*)(void*, const Array*, void*);
 Find originalFind = nullptr;
+using FindAcrossPaks = bool (*)(const Array*, const wchar_t*, void*, void*);
+FindAcrossPaks originalFindAcrossPaks = nullptr;
+std::atomic<unsigned int> listMessages{0};
 std::atomic<unsigned int> tableMessages{0};
 Logger logMessage = nullptr;
 std::wstring expectedPath;
@@ -170,6 +173,47 @@ unsigned char FindHook(void* pak, const Array* filename, void* entry) {
     return result;
 }
 
+bool FindAcrossPaksHook(const Array* list, const wchar_t* filename, void* outputPak, void* entry) {
+    const bool result=originalFindAcrossPaks(list,filename,outputPak,entry);
+    try {
+        if (listMessages.load()>=8) return result;
+        std::array<wchar_t,1024> name{};
+        std::size_t length=0;
+        for (;length+1<name.size();++length) {
+            if (!ReadBytes(reinterpret_cast<std::uintptr_t>(filename)+length*sizeof(wchar_t),
+                           &name[length],sizeof(wchar_t))) return result;
+            if (!name[length]) break;
+        }
+        if (length+1>=name.size() || !std::wcsstr(name.data(),L"CheatTable.")) return result;
+        if (listMessages.fetch_add(1)>=8) return result;
+        Array mounted{};
+        if (!ReadBytes(reinterpret_cast<std::uintptr_t>(list),&mounted,sizeof(mounted)) ||
+            mounted.count<1 || mounted.count>2048 || mounted.capacity<mounted.count) return result;
+        struct Mounted { unsigned int priority,padding; std::uintptr_t pak; };
+        std::array<wchar_t,2048> message{};
+        _snwprintf_s(message.data(),message.size(),_TRUNCATE,
+            L"ClientFixes mounted list: %ls; count=%d; original result=%d\r\n",
+            name.data(),mounted.count,static_cast<int>(result));
+        Log(message.data());
+        bool sawCustom=false;
+        for (int i=0;i<mounted.count;++i) {
+            Mounted item{};
+            if (!ReadBytes(mounted.data+static_cast<std::uintptr_t>(i)*sizeof(item),&item,sizeof(item))) continue;
+            const auto archive=ReadString(item.pak+0x18);
+            const bool custom=archive.find(L"BravoHotelGame-ClientFixes_P.pak")!=std::wstring::npos;
+            const bool source=archive.find(L"pakchunk17000-WindowsClient.pak")!=std::wstring::npos;
+            sawCustom|=custom;
+            if (!custom && !source) continue;
+            _snwprintf_s(message.data(),message.size(),_TRUNCATE,
+                L"ClientFixes mounted entry: position=%d; priority=%u; archive=%ls\r\n",
+                i,item.priority,archive.c_str());
+            Log(message.data());
+        }
+        if (!sawCustom) Log(L"ClientFixes mounted list: custom PAK absent from this lookup list.\r\n");
+    } catch (...) { /* Keep the engine's original lookup result. */ }
+    return result;
+}
+
 void AbsoluteJump(unsigned char* output, const void* target) {
     output[0]=0xff; output[1]=0x25;
     std::memset(output+2,0,4);
@@ -211,12 +255,10 @@ struct PausedThreads {
         return okay;
     }
 };
-bool InstallLookupDiagnostic(std::uintptr_t base) {
-    // Three complete stack-save instructions; no RIP-relative operands.
-    constexpr unsigned char prologue[] = {
-        0x48,0x89,0x5c,0x24,0x08,0x48,0x89,0x6c,0x24,0x10,0x48,0x89,0x74,0x24,0x18
-    };
-    auto target=reinterpret_cast<unsigned char*>(base+0x3eb7eb0);
+template<typename Function, std::size_t N>
+bool InstallTraceHook(std::uintptr_t base, std::uintptr_t rva,
+                      const unsigned char (&prologue)[N], Function replacement, Function& saved) {
+    auto target=reinterpret_cast<unsigned char*>(base+rva);
     std::array<unsigned char,sizeof(prologue)> actual{};
     if (!ReadBytes(reinterpret_cast<std::uintptr_t>(target),actual.data(),actual.size()) ||
         std::memcmp(actual.data(),prologue,sizeof(prologue))!=0) return false;
@@ -229,10 +271,10 @@ bool InstallLookupDiagnostic(std::uintptr_t base) {
         !FlushInstructionCache(GetCurrentProcess(),trampoline,64)) {
         VirtualFree(trampoline,0,MEM_RELEASE); return false;
     }
-    originalFind=reinterpret_cast<Find>(trampoline);
+    saved=reinterpret_cast<Function>(trampoline);
     std::array<unsigned char,sizeof(prologue)> patch{};
     patch.fill(0x90);
-    AbsoluteJump(patch.data(),reinterpret_cast<void*>(&FindHook));
+    AbsoluteJump(patch.data(),reinterpret_cast<void*>(replacement));
     bool installed=false;
     {
         PausedThreads paused;
@@ -247,8 +289,21 @@ bool InstallLookupDiagnostic(std::uintptr_t base) {
             installed=true;
         }
     }
-    if (!installed) { originalFind=nullptr; VirtualFree(trampoline,0,MEM_RELEASE); }
+    if (!installed) { saved=nullptr; VirtualFree(trampoline,0,MEM_RELEASE); }
     return installed;
+}
+bool InstallLookupDiagnostic(std::uintptr_t base) {
+    constexpr unsigned char findPrologue[] = {
+        0x48,0x89,0x5c,0x24,0x08,0x48,0x89,0x6c,0x24,0x10,0x48,0x89,0x74,0x24,0x18
+    };
+    constexpr unsigned char listPrologue[] = {
+        0x48,0x89,0x5c,0x24,0x08,0x4c,0x89,0x4c,0x24,0x20,0x4c,0x89,0x44,0x24,0x18
+    };
+    const bool find=InstallTraceHook(base,0x3eb7eb0,findPrologue,&FindHook,originalFind);
+    const bool list=InstallTraceHook(base,0x3eb8440,listPrologue,&FindAcrossPaksHook,originalFindAcrossPaks);
+    Log(list ? L"ClientFixes PAK: mounted-list priority diagnostic installed.\r\n"
+             : L"ClientFixes PAK: mounted-list priority diagnostic unavailable.\r\n");
+    return find;
 }
 } // namespace
 
