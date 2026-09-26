@@ -109,6 +109,7 @@ pub fn parse_args(raw: &str) -> Vec<String> {
 pub const BASE_ARGS: &[&str] = &[
     "-IgnoreCatalogue",
     "-ApiPhase=\"dev2s\"",
+    "-ExecCmds=\"PakFile.SearchRecentlyFoundPaks 0\"",
     // Empty on purpose. "Steam" sends the client down the Steam login path,
     // which needs Steam running and an account that owns the game. An EMPTY
     // value resolves to the client's `Internal` subsystem, which is its own
@@ -131,12 +132,30 @@ fn full_args(server: Option<&str>, user_args: &str) -> Vec<String> {
     // one. Unreal's parser takes the FIRST occurrence, so appending ours first
     // and theirs second would silently ignore whatever they typed -- which is
     // the opposite of what an override is for.
-    let user = parse_args(user_args);
+    let mut user = parse_args(user_args);
+    // Unreal reads the first ExecCmds switch. Combine commands into one value
+    // so user commands run after the default instead of being ignored.
+    let mut startup_commands = vec!["PakFile.SearchRecentlyFoundPaks 0".to_string()];
+    user.retain(|arg| {
+        if same_switch(arg, "-ExecCmds=") {
+            if let Some((_, value)) = arg.split_once('=') {
+                let value = value.trim_matches('"');
+                if !value.is_empty() && value != "PakFile.SearchRecentlyFoundPaks 0" {
+                    startup_commands.push(value.to_string());
+                }
+            }
+            false
+        } else {
+            true
+        }
+    });
     for base in BASE_ARGS {
         if EMPTY_VALUE_LAST.contains(base) {
             continue;                       // emitted after the player's args, see below
         }
-        if !user.iter().any(|u| same_switch(u, base)) {
+        if same_switch(base, "-ExecCmds=") {
+            args.push(format!("-ExecCmds=\"{}\"", startup_commands.join(",")));
+        } else if !user.iter().any(|u| same_switch(u, base)) {
             args.push((*base).to_string());
         }
     }
@@ -233,7 +252,18 @@ fn build_command(
     env: &[(String, String)],
 ) -> Command {
     let mut cmd = Command::new(exe);
-    cmd.args(args).current_dir(working_dir);
+    cmd.current_dir(working_dir);
+    for arg in args {
+        #[cfg(windows)]
+        if same_switch(arg, "-ExecCmds=") {
+            // Unreal parses the raw Windows command line. Keep the quotes
+            // around the value; Command::arg would escape and quote them again.
+            use std::os::windows::process::CommandExt;
+            cmd.raw_arg(arg);
+            continue;
+        }
+        cmd.arg(arg);
+    }
     for (k, v) in env {
         cmd.env(k, v);
     }
@@ -242,7 +272,7 @@ fn build_command(
 
 #[cfg(test)]
 mod tests {
-    use super::{build_command, detect, full_args, parse_args};
+    use super::{build_command, detect, full_args, parse_args, same_switch};
     use std::ffi::OsStr;
     use std::fs;
     use std::path::Path;
@@ -415,6 +445,58 @@ mod tests {
     fn keeps_quoted_spaces_together() {
         let got = parse_args(r#"-Path="C:\Program Files\x" -y"#);
         assert_eq!(got, vec![r#"-Path="C:\Program Files\x""#, "-y"]);
+    }
+
+    #[test]
+    fn startup_commands_always_begin_with_the_pak_cache_setting() {
+        let got = full_args(None, "-windowed -ExecCmds=\"stat fps,r.Streaming.PoolSize 512\" -log");
+        let exec: Vec<_> = got.iter().filter(|a| same_switch(a, "-ExecCmds=")).collect();
+        assert_eq!(exec, vec![&"-ExecCmds=\"PakFile.SearchRecentlyFoundPaks 0,stat fps,r.Streaming.PoolSize 512\"".to_string()]);
+        assert!(got.contains(&"-windowed".to_string()));
+        assert!(got.contains(&"-log".to_string()));
+        assert_eq!(got.last().unwrap(), "-ServicePlatform=");
+    }
+
+    #[test]
+    fn a_saved_copy_of_the_pak_cache_command_is_not_duplicated() {
+        let got = full_args(None, "-ExecCmds=\"PakFile.SearchRecentlyFoundPaks 0\"");
+        assert_eq!(got, base());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn captures_startup_command_line() {
+        let Some(path) = std::env::var_os("SP_TEST_COMMAND_LINE_OUTPUT") else { return; };
+        #[link(name = "kernel32")]
+        extern "system" { fn GetCommandLineW() -> *const u16; }
+        let text = unsafe {
+            let raw = GetCommandLineW();
+            let mut len = 0;
+            while len < 32768 && *raw.add(len) != 0 { len += 1; }
+            String::from_utf16_lossy(std::slice::from_raw_parts(raw, len))
+        };
+        fs::write(path, text).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn startup_command_quotes_reach_windows_exactly_once() {
+        let temp = tempfile::tempdir().unwrap();
+        let output = temp.path().join("command-line.txt");
+        let args = vec![
+            "--exact".to_string(),
+            "game::tests::captures_startup_command_line".to_string(),
+            "--nocapture".to_string(),
+            "--".to_string(),
+            "-ExecCmds=\"PakFile.SearchRecentlyFoundPaks 0,stat fps\"".to_string(),
+        ];
+        let env = vec![("SP_TEST_COMMAND_LINE_OUTPUT".to_string(), output.to_string_lossy().into_owned())];
+        let status = build_command(&std::env::current_exe().unwrap(), &args, temp.path(), &env).status().unwrap();
+        assert!(status.success());
+        let raw = fs::read_to_string(output).unwrap();
+        assert!(raw.contains("-ExecCmds=\"PakFile.SearchRecentlyFoundPaks 0,stat fps\""), "{raw}");
+        assert!(!raw.contains("-ExecCmds=\"\""), "{raw}");
+        assert!(!raw.contains(r#"\"PakFile.SearchRecentlyFoundPaks"#), "{raw}");
     }
 
     #[test]

@@ -129,3 +129,8 @@ No license has been chosen yet. All rights reserved unless a `LICENSE` file
 says otherwise. The bundled fonts (Refrigerator Deluxe, `src/assets/fonts/`)
 are commercial fonts: check their license before making this repository
 public.
+
+The launcher always runs `PakFile.SearchRecentlyFoundPaks 0` at game startup so
+PAK lookups follow mount priority. Extra launch arguments follow the defaults.
+User `-ExecCmds` values are appended to the default command in one comma-separated
+startup command list; a saved copy of the same cache command is not duplicated.
