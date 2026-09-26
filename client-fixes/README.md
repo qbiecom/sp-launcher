@@ -19,3 +19,26 @@ debugger when the window is hidden.
 - **Cheat Widget translation (disabled):** The translation implementation is retained,
   but its worker is not started. This allows testing a cooked PAK replacement
   without the DLL changing the table in memory.
+
+- **Signed ClientFixes PAK:** Adds a separate public RSA key for the exact file
+  `BravoHotelGame/Content/Paks/BravoHotelGame-ClientFixes_P.pak`. Its matching
+  `.sig` authenticates a SHA-256 digest of the complete PAK and its chunk CRC
+  table, with a ClientFixes-specific signing domain. The engine retains its
+  chunk integrity checks. Every other PAK path uses the original validator and
+  original key. This authenticates the custom patch; it is not server-side
+  anti-cheat enforcement.
+
+The hook starts only after the executable SHA-256 check passes and additionally
+checks all 19 bytes of the researched validator prologue. It pauses existing
+threads during the patch and refuses installation if any are executing in that
+prologue or cannot be checked. The signing key in source is public only; the
+private key must stay outside repositories and build artifacts. A successful
+verification holds a read-only sharing handle to the patch until process exit.
+The DLL remains loaded until process exit, as required by the existing worker
+lifetime model. DLL translations remain disabled.
+
+Build and verification run through the existing Windows GitHub Action. CTest
+uses a synthetic signed fixture and checks rejection of modified PAK bytes,
+modified CRCs, modified signatures and malformed lengths. These tests verify
+Windows cryptography and file verification; they do not establish live engine
+compatibility of the hook or sidecar parsing.

@@ -2,6 +2,7 @@
 #include <bcrypt.h>
 
 #include "cheat_translations.hpp"
+#include "custom_pak_signing.hpp"
 
 #include <array>
 #include <atomic>
@@ -870,6 +871,8 @@ DWORD WINAPI Run(LPVOID) {
     }
     Log(L"Supported build. Starting client fixes...\r\n");
     const auto base=reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr));
+    if (!clientfixes_signing::Install(base,Log))
+        Log(L"ClientFixes PAK: signing hook unavailable; custom archive remains untrusted.\r\n");
     HANDLE capsuleThread=CreateThread(nullptr,0,RunCapsules,
                                       reinterpret_cast<LPVOID>(base),0,nullptr);
     if (capsuleThread) CloseHandle(capsuleThread);
@@ -924,7 +927,7 @@ DWORD WINAPI Run(LPVOID) {
 
 // Exported version marker for identifying which DLL was embedded. This number
 // advances when a fix is added; the launcher does not currently branch on it.
-extern "C" __declspec(dllexport) unsigned int SPClientFixesVersion() { return 5; }
+extern "C" __declspec(dllexport) unsigned int SPClientFixesVersion() { return 6; }
 
 // DllMain runs under the Windows loader lock. Only disable thread callbacks
 // and start the bootstrap worker here; do not hash files, scan UObjects, wait
