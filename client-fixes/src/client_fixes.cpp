@@ -19,8 +19,8 @@
 // hashes that executable; none of the offsets below are read before it passes.
 //
 // After validation, one worker tracks the local world and class eligibility,
-// one tracks the merged capsule item table, one tracks First Blood audio, and
-// one translates the loaded cheat command table.
+// one tracks the merged capsule item table and one tracks First Blood audio.
+// Cheat command translation code is retained but its worker is disabled.
 // The launcher keeps the DLL loaded until process exit; there is no mid-game
 // unload protocol for stopping workers or restoring their temporary writes.
 namespace {
@@ -854,8 +854,8 @@ DWORD WINAPI RunFirstBlood(LPVOID imageBase) {
 }
 
 // Start after DllMain returns. The console appears before hash verification so
-// an unsupported build reports why no fix started. Capsules use their own
-// and Cheat Widget translations use their own workers. This thread tracks
+// an unsupported build reports why no fix started. Capsules and First Blood
+// use their own workers. This thread tracks
 // the standalone local controller for class selection and publishes it to
 // the First Blood worker.
 DWORD WINAPI Run(LPVOID) {
@@ -878,10 +878,7 @@ DWORD WINAPI Run(LPVOID) {
                                          reinterpret_cast<LPVOID>(base),0,nullptr);
     if (firstBloodThread) CloseHandle(firstBloodThread);
     else Log(L"First Blood fix: could not start worker thread.\r\n");
-    HANDLE cheatThread=CreateThread(nullptr,0,RunCheatTranslation,
-                                    reinterpret_cast<LPVOID>(base),0,nullptr);
-    if (cheatThread) CloseHandle(cheatThread);
-    else Log(L"Cheat Widget fix: could not start worker thread.\r\n");
+    // Keep DLL translations disabled while testing the cooked PAK replacement.
     LocalPlayer active{};
     LONG original=-1;
     DWORD nextScan=0;

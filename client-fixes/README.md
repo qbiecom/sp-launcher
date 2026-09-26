@@ -16,9 +16,6 @@ debugger when the window is hidden.
   later bot first-kill cues, and re-arms it for the next match. It checks the
   loaded perk widget script and sound assets before changing the audio
   reference. The 25 ms widget poll can miss exceptionally close kills.
-- **Cheat Widget translation:** Replaces all 69 Korean command descriptions
-  in the loaded `CheatTable` with concise English labels. It checks the table
-  and row layout before writing, stays within each existing string buffer,
-  and repeats when the table reloads. **Close and reopen the Cheat Widget in
-  game for the English labels to appear.** The separate yellow Close button
-  remains Korean.
+- **Cheat Widget translation (disabled):** The translation implementation is retained,
+  but its worker is not started. This allows testing a cooked PAK replacement
+  without the DLL changing the table in memory.
