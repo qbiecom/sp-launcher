@@ -5,6 +5,7 @@
 #include <array>
 #include <atomic>
 #include <cstring>
+#include <cwchar>
 #include <string>
 #include <vector>
 
@@ -19,6 +20,9 @@ constexpr char kDomain[] = "SPClientFixes-Pak-v1"; // Includes terminating zero.
 struct Array { std::uintptr_t data; std::int32_t count, capacity; };
 using Validate = bool (*)(void*, void*, const Array*);
 Validate original = nullptr;
+using Find = unsigned char (*)(void*, const Array*, void*);
+Find originalFind = nullptr;
+std::atomic<unsigned int> tableMessages{0};
 Logger logMessage = nullptr;
 std::wstring expectedPath;
 volatile LONG* recentPakLookup = nullptr;
@@ -127,6 +131,45 @@ bool Hook(void* table, void* originalKey, const Array* name) {
     }
 }
 
+std::wstring ReadString(std::uintptr_t address) {
+    Array value{};
+    if (!ReadBytes(address,&value,sizeof(value)) || value.count<1 ||
+        value.count>32768 || value.capacity<value.count) return {};
+    std::wstring text(static_cast<std::size_t>(value.count),L'\0');
+    if (!ReadBytes(value.data,text.data(),text.size()*sizeof(wchar_t)) || text.back()!=0) return {};
+    text.pop_back();
+    return text;
+}
+
+unsigned char FindHook(void* pak, const Array* filename, void* entry) {
+    const auto result=originalFind(pak,filename,entry);
+    // Inspect only the filename suffix before allocating text. The diagnostic
+    // returns the original result and never changes file selection or contents.
+    try {
+        Array name{};
+        std::array<wchar_t,18> suffix{};
+        if (tableMessages.load()>=64 ||
+            !ReadBytes(reinterpret_cast<std::uintptr_t>(filename),&name,sizeof(name)) ||
+            name.count<18 || name.count>32768 || name.capacity<name.count ||
+            !ReadBytes(name.data+(name.count-18)*sizeof(wchar_t),suffix.data(),sizeof(suffix)) ||
+            suffix.back()!=0 || !std::wcsstr(suffix.data(),L"CheatTable.")) return result;
+        const auto address=reinterpret_cast<std::uintptr_t>(pak);
+        const auto archive=ReadString(address+0x18);
+        const bool custom=archive.find(L"BravoHotelGame-ClientFixes_P.pak")!=std::wstring::npos;
+        if (!custom && result==0) return result;
+        const auto mount=ReadString(address+0x108);
+        LONG cache=-1;
+        if (recentPakLookup) ReadBytes(reinterpret_cast<std::uintptr_t>(recentPakLookup),&cache,sizeof(cache));
+        if (tableMessages.fetch_add(1)>=64) return result;
+        std::array<wchar_t,2048> message{};
+        _snwprintf_s(message.data(),message.size(),_TRUNCATE,
+            L"ClientFixes PAK lookup: %ls; archive=%ls; result=%u; cache=%ld; mount=%ls\r\n",
+            suffix.data(),archive.c_str(),static_cast<unsigned int>(result),cache,mount.c_str());
+        Log(message.data());
+    } catch (...) { /* Diagnostics must not change the engine result. */ }
+    return result;
+}
+
 void AbsoluteJump(unsigned char* output, const void* target) {
     output[0]=0xff; output[1]=0x25;
     std::memset(output+2,0,4);
@@ -168,6 +211,45 @@ struct PausedThreads {
         return okay;
     }
 };
+bool InstallLookupDiagnostic(std::uintptr_t base) {
+    // Three complete stack-save instructions; no RIP-relative operands.
+    constexpr unsigned char prologue[] = {
+        0x48,0x89,0x5c,0x24,0x08,0x48,0x89,0x6c,0x24,0x10,0x48,0x89,0x74,0x24,0x18
+    };
+    auto target=reinterpret_cast<unsigned char*>(base+0x3eb7eb0);
+    std::array<unsigned char,sizeof(prologue)> actual{};
+    if (!ReadBytes(reinterpret_cast<std::uintptr_t>(target),actual.data(),actual.size()) ||
+        std::memcmp(actual.data(),prologue,sizeof(prologue))!=0) return false;
+    auto trampoline=static_cast<unsigned char*>(VirtualAlloc(nullptr,64,MEM_COMMIT|MEM_RESERVE,PAGE_READWRITE));
+    if (!trampoline) return false;
+    std::memcpy(trampoline,prologue,sizeof(prologue));
+    AbsoluteJump(trampoline+sizeof(prologue),target+sizeof(prologue));
+    DWORD protection=0;
+    if (!VirtualProtect(trampoline,64,PAGE_EXECUTE_READ,&protection) ||
+        !FlushInstructionCache(GetCurrentProcess(),trampoline,64)) {
+        VirtualFree(trampoline,0,MEM_RELEASE); return false;
+    }
+    originalFind=reinterpret_cast<Find>(trampoline);
+    std::array<unsigned char,sizeof(prologue)> patch{};
+    patch.fill(0x90);
+    AbsoluteJump(patch.data(),reinterpret_cast<void*>(&FindHook));
+    bool installed=false;
+    {
+        PausedThreads paused;
+        if (paused.Pause(reinterpret_cast<std::uintptr_t>(target),sizeof(prologue)) &&
+            ReadBytes(reinterpret_cast<std::uintptr_t>(target),actual.data(),actual.size()) &&
+            std::memcmp(actual.data(),prologue,sizeof(prologue))==0 &&
+            VirtualProtect(target,sizeof(prologue),PAGE_EXECUTE_READWRITE,&protection)) {
+            std::memcpy(target,patch.data(),patch.size());
+            FlushInstructionCache(GetCurrentProcess(),target,patch.size());
+            DWORD ignored=0;
+            VirtualProtect(target,sizeof(prologue),protection,&ignored);
+            installed=true;
+        }
+    }
+    if (!installed) { originalFind=nullptr; VirtualFree(trampoline,0,MEM_RELEASE); }
+    return installed;
+}
 } // namespace
 
 bool VerifyFile(HANDLE file, const unsigned char* signature, std::size_t signatureSize,
@@ -264,6 +346,12 @@ bool Install(std::uintptr_t base, Logger logger) {
         MaintainPriorityLookup();
     } else {
         Log(L"ClientFixes PAK: priority lookup control unavailable or custom PAK absent.\r\n");
+    }
+    wchar_t diagnosticSetting[2]{};
+    if (GetEnvironmentVariableW(L"SP_CLIENT_FIXES_CONSOLE",diagnosticSetting,2)==1 && diagnosticSetting[0]==L'1') {
+        Log(InstallLookupDiagnostic(base)
+            ? L"ClientFixes PAK: CheatTable lookup diagnostic installed (result 0=missing, 1=found, 2=deleted).\r\n"
+            : L"ClientFixes PAK: CheatTable lookup diagnostic could not be installed.\r\n");
     }
     return true;
 }

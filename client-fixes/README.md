@@ -49,3 +49,10 @@ validated before enabling this control. Diagnostics report observed changes.
 This makes PAK lookup follow mount priority and may increase asset lookup cost.
 The preserved shipping executable contains no ASCII or UTF-16 `ExecCmds` literal;
 startup-command handling is therefore not relied upon for this setting.
+
+With the client-fixes debug console enabled, the build-checked CheatTable lookup
+diagnostic reports the original Find result, archive name, mount root, and current
+cache value. It logs custom-archive misses and successful/deleted entries from
+other archives, up to 64 messages. It does not alter lookup results. The extra
+lookup hook is omitted when the debug console setting is off.
+
