@@ -21,6 +21,8 @@ using Validate = bool (*)(void*, void*, const Array*);
 Validate original = nullptr;
 Logger logMessage = nullptr;
 std::wstring expectedPath;
+volatile LONG* recentPakLookup = nullptr;
+bool lookupLogged = false;
 BCRYPT_ALG_HANDLE rsaAlgorithm = nullptr;
 BCRYPT_KEY_HANDLE publicKey = nullptr;
 std::atomic<HANDLE> lockedPak{INVALID_HANDLE_VALUE};
@@ -242,6 +244,37 @@ bool Install(std::uintptr_t base, Logger logger) {
     }
     if (!installed) { original=nullptr; VirtualFree(trampoline,0,MEM_RELEASE); return false; }
     Log(L"ClientFixes PAK: scoped signing hook installed; original PAK validation preserved.\r\n");
+    // The registration passes this int by reference and the file lookup reads
+    // it directly. Validate both RIP-relative instructions before using it.
+    constexpr unsigned char lookupCheck[] = {0x83,0x3d,0x58,0x83,0x8a,0x03,0x00};
+    constexpr unsigned char registration[] = {0x4c,0x8d,0x05,0xc3,0xed,0x8c,0x06};
+    std::array<unsigned char,7> check{},reference{};
+    MEMORY_BASIC_INFORMATION region{};
+    auto value = reinterpret_cast<volatile LONG*>(base+0x77508f0);
+    const DWORD attributes=GetFileAttributesW(expectedPath.c_str());
+    if (attributes!=INVALID_FILE_ATTRIBUTES && !(attributes&FILE_ATTRIBUTE_DIRECTORY) &&
+        ReadBytes(base+0x3eb8591,check.data(),check.size()) &&
+        ReadBytes(base+0xe91b26,reference.data(),reference.size()) &&
+        std::memcmp(check.data(),lookupCheck,sizeof(lookupCheck))==0 &&
+        std::memcmp(reference.data(),registration,sizeof(registration))==0 &&
+        VirtualQuery(reinterpret_cast<const void*>(base+0x77508f0),&region,sizeof(region)) &&
+        region.State==MEM_COMMIT && !(region.Protect&(PAGE_GUARD|PAGE_NOACCESS)) &&
+        (region.Protect&(PAGE_READWRITE|PAGE_WRITECOPY|PAGE_EXECUTE_READWRITE|PAGE_EXECUTE_WRITECOPY))) {
+        recentPakLookup=value;
+        MaintainPriorityLookup();
+    } else {
+        Log(L"ClientFixes PAK: priority lookup control unavailable or custom PAK absent.\r\n");
+    }
     return true;
+}
+void MaintainPriorityLookup() {
+    if (!recentPakLookup) return;
+    const LONG previous=InterlockedExchange(recentPakLookup,0);
+    if (!lookupLogged || previous!=0) {
+        Log(previous!=0
+            ? L"ClientFixes PAK: lookup cache changed from nonzero to 0; priority lookup active.\r\n"
+            : L"ClientFixes PAK: lookup cache confirmed 0; priority lookup active.\r\n");
+        lookupLogged=true;
+    }
 }
 } // namespace clientfixes_signing

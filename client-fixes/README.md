@@ -42,3 +42,10 @@ uses a synthetic signed fixture and checks rejection of modified PAK bytes,
 modified CRCs, modified signatures and malformed lengths. These tests verify
 Windows cryptography and file verification; they do not establish live engine
 compatibility of the hook or sidecar parsing.
+When the custom PAK is present, the supported-build worker keeps the researched
+`PakFile.SearchRecentlyFoundPaks` integer at zero, checking every 250 ms to
+recover from later config writes. The registration and lookup instructions are
+validated before enabling this control. Diagnostics report observed changes.
+This makes PAK lookup follow mount priority and may increase asset lookup cost.
+The preserved shipping executable contains no ASCII or UTF-16 `ExecCmds` literal;
+startup-command handling is therefore not relied upon for this setting.

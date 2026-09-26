@@ -5,6 +5,8 @@
 namespace clientfixes_signing {
 using Logger = void (*)(const wchar_t*);
 bool Install(std::uintptr_t base, Logger logger);
+// Called by the existing worker after Install; no-op without the custom PAK.
+void MaintainPriorityLookup();
 // Exposed for synthetic offline verification; does not install hooks.
 bool VerifyFile(HANDLE file, const unsigned char* signature, std::size_t signatureSize,
                 const unsigned char* chunks, std::size_t chunksSize);

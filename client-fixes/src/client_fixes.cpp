@@ -886,6 +886,8 @@ DWORD WINAPI Run(LPVOID) {
     LONG original=-1;
     DWORD nextScan=0;
     for (;;) {
+        // Config passes can restore the favorite-PAK cache after injection.
+        clientfixes_signing::MaintainPriorityLookup();
         LocalPlayer current{};
         if (active.controller && Validate(active.controller, current) &&
             current.world == active.world && current.info == active.info) {
@@ -927,7 +929,7 @@ DWORD WINAPI Run(LPVOID) {
 
 // Exported version marker for identifying which DLL was embedded. This number
 // advances when a fix is added; the launcher does not currently branch on it.
-extern "C" __declspec(dllexport) unsigned int SPClientFixesVersion() { return 6; }
+extern "C" __declspec(dllexport) unsigned int SPClientFixesVersion() { return 7; }
 
 // DllMain runs under the Windows loader lock. Only disable thread callbacks
 // and start the bootstrap worker here; do not hash files, scan UObjects, wait
